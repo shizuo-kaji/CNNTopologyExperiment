@@ -23,8 +23,8 @@ MIT Licence
 
 The result is, the CNN succeeds in learning homology!
 
-![results](https://github.com/shizuo-kaji/CNNTopologyExperiment/blob/master/H0.jpg?raw=true)
-![results](https://github.com/shizuo-kaji/CNNTopologyExperiment/blob/master/H1.jpg?raw=true)
+![results](https://github.com/shizuo-kaji/CNNTopologyExperiment/blob/master/H0.jpeg?raw=true)
+![results](https://github.com/shizuo-kaji/CNNTopologyExperiment/blob/master/H1.jpeg?raw=true)
 
 The blue line shows the true value and the red line shows the corresponding prediction.
 
