@@ -16,15 +16,14 @@ from chainer.dataset import dataset_mixin, convert, concat_examples
 import numpy as np
 import functools
 
-from chainerui.extensions import CommandsExtension
+#from chainerui.extensions import CommandsExtension
 from chainerui.utils import save_args
 
 import os
 import glob
 from datetime import datetime as dt
 
-from chainercv.transforms import random_crop,center_crop,random_flip,resize
-from chainercv.utils import read_image
+from dataset_img import Dataset
 
 # optimisers
 optim = {
@@ -64,75 +63,28 @@ class Resnet(chainer.Chain):
         h = self.fc2(h)
         return h
 
-## dataset preparation
-# the first column is the filename (only numbers are allowed)
-# the other columns are for target values
-class Dataset(dataset_mixin.DatasetMixin):
-    def __init__(self, path, csv, cw=480,ch=320,random=0, regression=True, cols=[1]):
-        self.path = path
-        self.ids = []
-        self.random = random
-        self.cw = cw
-        self.ch = ch
-        self.color=True
-        self.pattern = '{0:05d}.png'   #'A{0:03d}_0B.jpg'
-        #self.pattern = 'dt_{0:05d}.jpg'
-        self.regression = regression
-        dtype = np.float32 if regression else np.int32
-        self.csvdata = np.loadtxt(csv, delimiter=",", skiprows=0,dtype=dtype)
-        if regression:
-            self.mean = self.csvdata.mean(axis=0, keepdims=True)[:,cols]
-            self.std  = np.std(self.csvdata, axis=0, keepdims=True)[:,cols]
-            self.dat = (self.csvdata[:,cols]-self.mean)/self.std
-        else:
-            self.mean = np.zeros_like(self.csvdata[:,1])
-            self.std = np.ones_like(self.csvdata[:,1])
-            self.dat = self.csvdata[:,1]
-        print("{} subjects, {} variables, {}".format(self.csvdata.shape[0],self.csvdata.shape[1]-1,self.dat.dtype))
-        for e in self.csvdata:
-            fn=self.pattern.format(int(e[0]))
-            self.ids.append(os.path.join(path,fn))
-
-    def __len__(self):
-        return len(self.ids)
-
-    def get_img_path(self, i):
-        return self.ids[i]
-
-    def get_example(self, i):
-        #x = L.model.vision.resnet.prepare(x)
-        img = read_image(self.get_img_path(i),color=self.color)
-        img = img * 2 / 255.0 - 1.0  # [-1, 1)
-#        img = resize(img, (self.resize_to, self.resize_to))
-        img = center_crop(img,(self.ch+self.random, self.cw+self.random//2))
-        img = random_crop(img, (self.ch,self.cw))
-        if self.random>0:
-            img = random_flip(img, x_random=True)
-        return (img,self.dat[i])
-
-
-
 
 def main():
     # command line argument parsing
     parser = argparse.ArgumentParser(description='Multi-Perceptron classifier/regressor')
     parser.add_argument('train', help='Path to csv file')
     parser.add_argument('--root', '-R', default="betti", help='Path to image files')
-    parser.add_argument('--val', help='Path to validation csv file')
+    parser.add_argument('--val', help='Path to validation csv file',required=True)
     parser.add_argument('--regress', '-r', action='store_true', help='set for regression, otherwise classification')
+    parser.add_argument('--time_series', '-ts', action='store_true', help='set for time series data')
     parser.add_argument('--batchsize', '-b', type=int, default=10,
                         help='Number of samples in each mini-batch')
     parser.add_argument('--nclass', '-nc', type=int, default=2,
                         help='Number of classes for classification')
-    parser.add_argument('--cols', '-c', type=int, nargs="*", default=[2],
+    parser.add_argument('--cols', '-c', type=int, nargs="*", default=[1],
                         help='column indices in csv of target variables')
     parser.add_argument('--epoch', '-e', type=int, default=500,
                         help='Number of sweeps over the dataset to train')
-    parser.add_argument('--snapshot', '-s', type=int, default=-1,
+    parser.add_argument('--snapshot', '-s', type=int, default=100,
                         help='snapshot interval')
     parser.add_argument('--initmodel', '-i',
                         help='Initialize the model from given file')
-    parser.add_argument('--random', '-rt', type=int, default=2,
+    parser.add_argument('--random', '-rt', type=int, default=1,
                         help='random translation')
     parser.add_argument('--gpu', '-g', type=int,
                         help='GPU ID (negative value indicates CPU)')
@@ -142,17 +94,17 @@ def main():
                         help='Directory to output the result')
     parser.add_argument('--optimizer', '-op',choices=optim.keys(),default='Adam',
                         help='optimizer')
-    parser.add_argument('--resume',
+    parser.add_argument('--resume', type=str, default=None,
                         help='Resume the training from snapshot')
-    parser.add_argument('--predict', '-p')
+    parser.add_argument('--predict', '-p', action='store_true', help='prediction with a specified model')
     parser.add_argument('--tuning_rate', '-tr', type=float, default=0.1,
-                        help='learning late for already learned layers')
+                        help='learning rate for pretrained layers')
     parser.add_argument('--dropout', '-dr', type=float, default=0,
-                        help='dropout ratio for fc layers')
+                        help='dropout ratio for the FC layers')
     parser.add_argument('--cw', '-cw', type=int, default=128,
-                        help='image width')
+                        help='crop image width')
     parser.add_argument('--ch', '-ch', type=int, default=128,
-                        help='image height')
+                        help='crop image height')
     parser.add_argument('--weight_decay', '-w', type=float, default=1e-6,
                         help='weight decay for regularization')
     parser.add_argument('--wd_norm', '-wn', choices=['none','l1','l2'], default='l2',
@@ -203,9 +155,6 @@ def main():
     if args.initmodel:
         print('Load model from: ', args.initmodel)
         chainer.serializers.load_npz(args.initmodel, model)
-    if args.predict:
-        print('Load model from: ', args.predict)
-        chainer.serializers.load_npz(args.predict, model)
     if args.gpu >= 0:
         chainer.cuda.get_device(args.gpu).use()  # Make a specified GPU current
         model.to_gpu()  # Copy the model to the GPU
@@ -214,8 +163,8 @@ def main():
     xp = chainer.cuda.cupy if args.gpu >= 0 else np
 
     # read csv file
-    train = Dataset(args.root,args.train, cw=args.cw,ch=args.ch,random=args.random, regression=args.regress,cols=args.cols)
-    test = Dataset(args.root,args.val,cw=args.cw,ch=args.ch, regression=args.regress,cols=args.cols)
+    train = Dataset(args.root,args.train, cw=args.cw,ch=args.ch,random=args.random,regression=args.regress,time_series=args.time_series,cols=args.cols)
+    test = Dataset(args.root,args.val,cw=args.cw,ch=args.ch, regression=args.regress,time_series=args.time_series,cols=args.cols)
 
     train_iter = iterators.SerialIterator(train, args.batchsize, shuffle=True)
     test_iter = iterators.SerialIterator(test, args.batchsize, repeat=False, shuffle=False)
@@ -225,9 +174,9 @@ def main():
 
     frequency = args.epoch if args.snapshot == -1 else max(1, args.snapshot)
     log_interval = 1, 'epoch'
-    val_interval = frequency/10, 'epoch'
+    val_interval = 20, 'epoch' # frequency/10, 'epoch'
 
-    trainer.extend(extensions.snapshot(filename='snapshot_epoch_{.updater.epoch}'), trigger=(frequency, 'epoch'))
+#    trainer.extend(extensions.snapshot(filename='snapshot_epoch_{.updater.epoch}'), trigger=(frequency, 'epoch'))
     trainer.extend(extensions.snapshot_object(model, 'model_epoch_{.updater.epoch}'), trigger=(frequency, 'epoch'))
     trainer.extend(extensions.LogReport(trigger=log_interval))
     trainer.extend(extensions.dump_graph('main/loss'))
@@ -257,7 +206,7 @@ def main():
         chainer.serializers.load_npz(args.resume, trainer)
 
     # ChainerUI
-    trainer.extend(CommandsExtension())
+    #trainer.extend(CommandsExtension())
     save_args(args, args.outdir)
     trainer.extend(extensions.LogReport(trigger=log_interval))
 
@@ -268,39 +217,38 @@ def main():
     print("predicting: {} entries...".format(len(test)))
     test_iter = iterators.SerialIterator(test, args.batchsize, repeat=False, shuffle=False)
     converter=concat_examples
-    idx = 0
-    if args.regress:
-        result = np.zeros((len(test),1+out_ch*2))
-    else:
-        result = np.zeros((len(test),2+out_ch))
-    for batch in test_iter:
-        x, t = converter(batch, device=args.gpu)
-        with chainer.using_config('train', False):
-            with chainer.function.no_backprop_mode():
-                if args.regress:
-                    y = model.predictor(x).data
-                    if args.gpu>-1:
-                        y = xp.asnumpy(y)
-                        t = xp.asnumpy(t)
-                    y = y * test.std + test.mean
-                    t = t * test.std + test.mean
+    idx=0
+    with open(os.path.join(args.outdir,'result.txt'),'w') as output:
+        for batch in test_iter:
+            x, t = converter(batch, device=args.gpu)
+            with chainer.using_config('train', False):
+                with chainer.function.no_backprop_mode():
+                    if args.regress:
+                        y = model.predictor(x).data
+                        if args.gpu>-1:
+                            y = xp.asnumpy(y)
+                            t = xp.asnumpy(t)
+                        y = y * test.std + test.mean
+                        t = t * test.std + test.mean
+                    else:
+                        y = F.softmax(model.predictor(x)).data
+                        if args.gpu>-1:
+                            y = xp.asnumpy(y)
+                            t = xp.asnumpy(t)
+            for i in range(y.shape[0]):
+                output.write(os.path.basename(test.ids[idx]))
+                if(len(t.shape)>1):
+                    for j in range(t.shape[1]):
+                        output.write(",{}".format(t[i,j]))
+                        output.write(",{}".format(y[i,j]))
                 else:
-                    y = F.softmax(model.predictor(x)).data
-                    if args.gpu>-1:
-                        y = xp.asnumpy(y)
-                        t = xp.asnumpy(t)
-        for i in range(y.shape[0]):
-            result[idx,0] = test.csvdata[idx][0]
-            if(len(t.shape)>1):
-                for j in range(t.shape[1]):
-                    result[idx,2*j+1] = t[i,j]
-                    result[idx,2*j+2] = y[i,j]
-            else:
-                result[idx,1] = t[i]
-                result[idx,2:] = y[i,:]
-            idx += 1
+                    output.write(",{}".format(t[i]))
+                    output.write(",{}".format(np.argmax(y[i,:])))
+                    output.write(",{0[0]:1.5f},{0[1]:1.5f}".format(y[i,:]))
+                output.write("\n")
+                idx += 1
 
-    np.savetxt(os.path.join(args.outdir,"result.csv"), result , fmt='%1.5f', delimiter=",")
+#    np.savetxt(os.path.join(args.outdir,"result.csv"), result , fmt='%s', delimiter=",") # fmt='%1.5f'
 
 if __name__ == '__main__':
     main()
