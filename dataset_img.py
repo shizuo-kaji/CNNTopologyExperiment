@@ -9,6 +9,7 @@ import pandas as pd
 
 from chainercv.transforms import random_crop,center_crop,random_flip,resize
 from chainercv.utils import read_image
+import chainer.links as L
 
 
 ## dataset preparation
@@ -33,12 +34,14 @@ class Dataset(dataset_mixin.DatasetMixin):
         if regression:
             self.mean = self.csvdata.mean(axis=0, keepdims=True)
             self.std  = np.std(self.csvdata, axis=0, keepdims=True)
+            self.chs = len(cols)
             self.dat = (self.csvdata-self.mean)/self.std
-        else:
+        else: # for classification, only the first target column is used
             self.mean = np.zeros_like(self.csvdata[:,0])
             self.std = np.ones_like(self.csvdata[:,0])
+            self.chs = np.max(self.csvdata[:,0]) + 1   # +1 for class id "0"
             self.dat = self.csvdata[:,0]
-        print("{} subjects, {} variables, {}".format(len(self.csvdata),len(cols),self.dat.dtype))
+        print("{} subjects, {} out channels, {}".format(len(self.csvdata),self.chs,self.dat.dtype))
         for e in dat.iloc[:,0].values:
 #            fn='{0:05d}.png'.format(int(e[0]))
             self.ids.append(os.path.join(path,e))
@@ -55,12 +58,11 @@ class Dataset(dataset_mixin.DatasetMixin):
             img = np.loadtxt(self.get_img_path(i), delimiter=',', skiprows=self.skiprows, dtype=np.float32)*self.amp
             img = img[offset:(offset+3*self.cw*self.ch),self.cols[0]].reshape(3,self.ch,self.cw)
         else:
-            #x = L.model.vision.resnet.prepare(x)
             img = read_image(self.get_img_path(i),color=self.color)
-            img = img * 2 / 255.0 - 1.0  # [-1, 1)
-    #        img = resize(img, (self.resize_to, self.resize_to))
-            img = center_crop(img,(self.ch+self.random, self.cw+self.random//2))
+            img = L.model.vision.resnet.prepare(img, size=None)
+            img = center_crop(img,(self.ch+self.random, self.cw+self.random))
             img = random_crop(img, (self.ch,self.cw))
+#            img = img * 2 / 255.0 - 1.0  # [-1, 1)
             if self.random>0:
                 img = random_flip(img, x_random=True)
         return (img,self.dat[i])

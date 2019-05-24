@@ -44,23 +44,27 @@ dtypes = {
 class Resnet(chainer.Chain):
     def __init__(self, args):
         self.dropout = args.dropout
-        w = chainer.initializers.HeNormal()
-        bias = chainer.initializers.Zero()
-        out_ch = len(args.cols) if args.regress else args.nclass 
+        self.layer = args.layer
+        self.fch = args.fch
+        #w = chainer.initializers.HeNormal()
+        #bias = chainer.initializers.Zero()
         super(Resnet, self).__init__(
             base = L.ResNet152Layers(),
-#            pointwise = L.Convolution2D(None, len(args.cols), 1, 1, 0, initialW=w, initial_bias=bias),
-            fc1 = L.Linear(None,1024),
-            fc2 = L.Linear(1024, out_ch)
         )
+        ## add fc layers for finetuning
+        with self.init_scope():
+#            pointwise = L.Convolution2D(None, len(args.cols), 1, 1, 0, initialW=w, initial_bias=bias),
+            for i in range(len(args.fch)-1):
+                setattr(self, 'fc' + str(i), L.Linear(None,args.fch[i]))
+            self.fcl = L.Linear(None, args.chs)
     def __call__(self, x):
-        h = self.base(x, layers=['res5'])['res5']
-#        h = self.base(x, layers=['pool5'])['pool5']
+        h = self.base(x, layers=[self.layer])[self.layer]
         h = F.dropout(h,ratio=self.dropout/2)
 #        h = F.max(self.pointwise(h),axis=(2,3))
-        h = F.relu(self.fc1(h))
-        h = F.dropout(h,ratio=self.dropout)
-        h = self.fc2(h)
+        for i in range(len(self.fch)-1):
+            h = F.relu(getattr(self, 'fc' + str(i))(h))
+            h = F.dropout(h,ratio=self.dropout)
+        h = self.fcl(h)
         return h
 
 
@@ -74,11 +78,13 @@ def main():
     parser.add_argument('--time_series', '-ts', action='store_true', help='set for time series data')
     parser.add_argument('--batchsize', '-b', type=int, default=10,
                         help='Number of samples in each mini-batch')
-    parser.add_argument('--nclass', '-nc', type=int, default=2,
-                        help='Number of classes for classification')
+    parser.add_argument('--layer', '-l', type=str, choices=['res5','pool5'], default='pool5',
+                        help='output layer of the pretrained ResNet')
+    parser.add_argument('--fch', type=int, nargs="*", default=[],
+                        help='numbers of channels for the last fc layers')
     parser.add_argument('--cols', '-c', type=int, nargs="*", default=[1],
                         help='column indices in csv of target variables')
-    parser.add_argument('--epoch', '-e', type=int, default=500,
+    parser.add_argument('--epoch', '-e', type=int, default=300,
                         help='Number of sweeps over the dataset to train')
     parser.add_argument('--snapshot', '-s', type=int, default=100,
                         help='snapshot interval')
@@ -118,6 +124,11 @@ def main():
     chainer.config.autotune = True
     chainer.config.dtype = dtypes[args.dtype]
     chainer.print_runtime_info()
+
+    # read csv file
+    train = Dataset(args.root,args.train, cw=args.cw,ch=args.ch,random=args.random,regression=args.regress,time_series=args.time_series,cols=args.cols)
+    test = Dataset(args.root,args.val,cw=args.cw,ch=args.ch, regression=args.regress,time_series=args.time_series,cols=args.cols)
+
     ##
     if not args.gpu:
         if chainer.cuda.available:
@@ -125,15 +136,19 @@ def main():
         else:
             args.gpu = -1          
     print(args)
+    save_args(args, args.outdir)
 
     if args.regress:
         accfun = F.mean_absolute_error
         lossfun = F.mean_squared_error
-        out_ch = len(args.cols)
+        args.chs = len(args.cols)
     else:
         accfun = F.accuracy
         lossfun = F.softmax_cross_entropy
-        out_ch = args.nclass 
+        args.chs = max(train.chs,test.chs)
+        if len(args.cols)>1:
+            print("\n\nClassification only works with a single target.\n\n")
+            exit()
 
     # Set up a neural network to train
     model = L.Classifier(Resnet(args), lossfun=lossfun, accfun=accfun)
@@ -162,12 +177,10 @@ def main():
     # select numpy or cupy
     xp = chainer.cuda.cupy if args.gpu >= 0 else np
 
-    # read csv file
-    train = Dataset(args.root,args.train, cw=args.cw,ch=args.ch,random=args.random,regression=args.regress,time_series=args.time_series,cols=args.cols)
-    test = Dataset(args.root,args.val,cw=args.cw,ch=args.ch, regression=args.regress,time_series=args.time_series,cols=args.cols)
-
-    train_iter = iterators.SerialIterator(train, args.batchsize, shuffle=True)
-    test_iter = iterators.SerialIterator(test, args.batchsize, repeat=False, shuffle=False)
+#    train_iter = iterators.SerialIterator(train, args.batchsize, shuffle=True)
+#    test_iter = iterators.SerialIterator(test, args.batchsize, repeat=False, shuffle=False)
+    train_iter = iterators.MultithreadIterator(train, args.batchsize, shuffle=True, n_threads=args.loaderjob)
+    test_iter = iterators.MultithreadIterator(test, args.batchsize, repeat=False, shuffle=False, n_threads=args.loaderjob)
 
     updater = training.StandardUpdater(train_iter, optimizer, device=args.gpu)
     trainer = training.Trainer(updater, (args.epoch, 'epoch'), out=args.outdir)
@@ -207,7 +220,6 @@ def main():
 
     # ChainerUI
     #trainer.extend(CommandsExtension())
-    save_args(args, args.outdir)
     trainer.extend(extensions.LogReport(trigger=log_interval))
 
     if not args.predict:
@@ -244,7 +256,8 @@ def main():
                 else:
                     output.write(",{}".format(t[i]))
                     output.write(",{}".format(np.argmax(y[i,:])))
-                    output.write(",{0[0]:1.5f},{0[1]:1.5f}".format(y[i,:]))
+                    for yy in y[i]:
+                        output.write(",{0:1.5f}".format(yy))
                 output.write("\n")
                 idx += 1
 

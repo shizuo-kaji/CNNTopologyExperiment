@@ -19,17 +19,20 @@ MIT Licence
 - Download all the files and extract betti.zip
 - Start training for Betti number computation by
 
-```python finetune.py betti_train.csv --val betti_val.csv -c 1 2 -nc 11 -R betti -rt 1 -cw 128 -ch 128```
-for 11-class (0 to 10) classification for ordinary Betti number.
+```python finetune.py betti_train.csv --val betti_val.csv -c 1 -R betti -rt 1 -cw 128 -ch 128```
+for 11-class (0 to 10) classification for the ordinary 0th Betti number.
 
 (note: to ignore the boundary of the image, set cw + rt =< 130, which is the size of the image)
+
+```python finetune.py betti_train.csv --val betti_val.csv -c 2 -R betti -rt 1 -cw 128 -ch 128```
+for 11-class (0 to 10) classification for ordinary 1st Betti number.
 
 ```python finetune.py betti_train.csv --val betti_val.csv -c 3 4 --regress -R betti -rt 1 -cw 128 -ch 128```
 for regression for persistent (lifetime-weighted) Betti number
 
 The csv files contain lines of the form
 ```
-filename, 0th Betti, 1th Betti, 0th persistent Betti, 1th persistent Betti
+filename, 0th Betti, 1th Betti, 0th persistent Betti, 1st persistent Betti
 ```
 
 The result is, the CNN succeeds in learning homology!
